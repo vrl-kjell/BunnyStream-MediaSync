@@ -14,13 +14,14 @@ I know there are other providers that have excellent CDNs, providing on the fly 
 I'll be honest, before today, I had never heard of them. But they popped to the top in search results and in AI recommendations. I compared them to a few other platforms and was pleasantly surprised at the affordability. It's truly consumption based and you get to control all of the levers. They offer georeplication, pop caching, and the coolest feature to me was adaptive HLS stream which is CRAZY fast. Again, you get to control the CDN and not leave it to YouTube or Vimeo. They do a limited trial and you can get $50 credit for two weeks of testing to see if you like it.
 
 ## What does this plugin do?
-I tried to emulate the way Triumph created the Vimeo Media Sync plugin to a certain degree. What I couldn't pull from BunnyStream I'm pull from Rock interactions. In essence, you create a collection in BunnyStream and those videos can be brought in as media elements in Rock. You can then use the Media Shortcode or media lava to show the videos wherever you need them. Just like all other media accounts you can also use it to populate content channels.
+I tried to emulate the way Triumph created the Vimeo Media Sync plugin to a certain degree. What I couldn't pull from BunnyStream I pulled from Rock interactions. In essence, you create a collection in BunnyStream and those videos can be brought in as media elements in Rock. You can then use the Media Shortcode or media lava to show the videos wherever you need them. You can also use it to populate content channels. Just like all other media accounts. 
 
 ## Installation
-* Download the .dll and drop it into you wwwroot/Bin folder. Note: touching DLLs will cause an AppPool recycle.
-* Once your App comes back up, go to Admin Tools > Media Accounts
-* Add a new media account and choose the BunnyStream Media Account type.
-* Assuming you've already set up your BunnyStream collection, you'll need to grab your video library Id and your API key (I recommend read only)
+* Set up your [Bunny.net](https://bunny.net?ref=nzxn0bwl71)
+* Download the .dll from this repo and drop it into you wwwroot/Bin folder. Note: touching DLLs will cause an AppPool recycle.
+* Once your App comes back up, go to Admin Tools > Media Accounts.
+* Add a new media account and choose the BunnyStream Media Sync account type.
+* You'll need to grab your video library Id and your API key (I recommend read only).
 * That's pretty much it. It otherwise operates the same as the other media sync plugins.
 
 ## Issues:
