@@ -1,0 +1,531 @@
+using Rock.Attribute;
+using Rock.Data;
+using Rock.Media;
+using Rock.Model;
+using Rock.Web.Cache;
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.ComponentModel.Composition;
+using System.Data.Entity;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Newtonsoft.Json.Linq;
+
+namespace dev.uplands.BunnyStream
+{
+    [Description( "Bunny Stream media account provider." )]
+    [Export( typeof( MediaAccountComponent ) )]
+    [ExportMetadata( "ComponentName", "BunnyStream Media Sync" )]
+
+    [TextField( "Library ID",
+        Description = "The numeric ID of your Bunny Stream video library.",
+        IsRequired = true,
+        Order = 0,
+        Key = AttributeKey.LibraryId )]
+
+    [EncryptedTextField( "API Key",
+        Description = "The Stream API key found in your video library's API settings.",
+        IsRequired = true,
+        Order = 1,
+        Key = AttributeKey.ApiKey )]
+
+    [TextField( "CDN Hostname",
+        Description = "The pull zone hostname for the library, e.g. vz-a1b2c3d4-e5f.b-cdn.net",
+        IsRequired = true,
+        Order = 2,
+        Key = AttributeKey.CdnHostname )]
+    public class BunnyStream : MediaAccountComponent
+    {
+        private static class AttributeKey
+        {
+            public const string LibraryId = "LibraryId";
+            public const string ApiKey = "ApiKey";
+            public const string CdnHostname = "CdnHostname";
+        }
+
+        public override bool AllowsManualEntry => false;
+
+        #region Sync
+
+        public override Task<SyncOperationResult> RefreshAccountAsync( MediaAccount mediaAccount, CancellationToken cancellationToken )
+        {
+            // Bunny's sync is only a couple of API calls, so the incremental
+            // refresh and the full sync do exactly the same work.
+            return SyncFromBunnyAsync( mediaAccount, cancellationToken );
+        }
+
+        public override Task<SyncOperationResult> SyncMediaAsync( MediaAccount mediaAccount, CancellationToken cancellationToken )
+        {
+            return SyncFromBunnyAsync( mediaAccount, cancellationToken );
+        }
+
+        public override Task<SyncOperationResult> SyncAnalyticsAsync( MediaAccount mediaAccount, CancellationToken cancellationToken )
+        {
+            // Play analytics are read from Rock's own interactions, so there
+            // is nothing to fetch from Bunny here.
+            return Task.FromResult( new SyncOperationResult( new string[0] ) );
+        }
+
+        /// <summary>
+        /// Pulls collections and videos from Bunny and reconciles them
+        /// against Rock's folders and media elements.
+        /// </summary>
+        private async Task<SyncOperationResult> SyncFromBunnyAsync( MediaAccount mediaAccount, CancellationToken cancellationToken )
+        {
+            var libraryId = GetAttributeValue( mediaAccount, AttributeKey.LibraryId );
+            var apiKey = Rock.Security.Encryption.DecryptString( GetAttributeValue( mediaAccount, AttributeKey.ApiKey ) );
+            var cdnHostname = GetAttributeValue( mediaAccount, AttributeKey.CdnHostname ).Trim().TrimEnd( '/' );
+
+            var errors = new List<string>();
+
+            try
+            {
+                using ( var api = new BunnyApiClient( libraryId, apiKey ) )
+                {
+                    var collectionResponse = await api.GetAsync( "collections?page=1&itemsPerPage=100", cancellationToken );
+                    var collections = ( collectionResponse["items"] as JArray ?? new JArray() ).ToList();
+
+                    var videos = await GetAllVideosAsync( api, cancellationToken );
+
+                    SyncFolders( mediaAccount, collections );
+                    SyncVideos( mediaAccount, videos, cdnHostname );
+                }
+            }
+            catch ( Exception ex )
+            {
+                errors.Add( ex.Message );
+            }
+
+            return new SyncOperationResult( errors );
+        }
+
+        /// <summary>
+        /// Adds, updates, and removes folders to match Bunny's collections.
+        /// </summary>
+        private static void SyncFolders( MediaAccount mediaAccount, List<JToken> collections )
+        {
+            using ( var rockContext = new RockContext() )
+            {
+                var folderService = new MediaFolderService( rockContext );
+
+                var existingFolders = folderService.Queryable()
+                    .Where( f => f.MediaAccountId == mediaAccount.Id )
+                    .ToList();
+
+                var bunnyKeys = new List<string>();
+
+                foreach ( var collection in collections )
+                {
+                    var sourceKey = collection["guid"]?.ToString();
+
+                    bunnyKeys.Add( sourceKey );
+
+                    var folder = existingFolders.FirstOrDefault( f => f.SourceKey == sourceKey );
+
+                    if ( folder == null )
+                    {
+                        folder = new MediaFolder
+                        {
+                            MediaAccountId = mediaAccount.Id,
+                            SourceKey = sourceKey
+                        };
+
+                        folderService.Add( folder );
+                    }
+
+                    folder.Name = collection["name"]?.ToString();
+                    folder.SourceData = collection.ToString();
+                }
+
+                // Remove folders whose collection no longer exists in Bunny.
+                var orphanedFolders = existingFolders
+                    .Where( f => !bunnyKeys.Contains( f.SourceKey ) )
+                    .ToList();
+
+                foreach ( var folder in orphanedFolders )
+                {
+                    folderService.Delete( folder );
+                }
+
+                rockContext.SaveChanges();
+            }
+        }
+
+        /// <summary>
+        /// Adds, updates, and removes media elements to match Bunny's videos.
+        /// </summary>
+        private static void SyncVideos( MediaAccount mediaAccount, List<JToken> videos, string cdnHostname )
+        {
+            using ( var rockContext = new RockContext() )
+            {
+                var folderService = new MediaFolderService( rockContext );
+                var elementService = new MediaElementService( rockContext );
+
+                var folders = folderService.Queryable()
+                    .Where( f => f.MediaAccountId == mediaAccount.Id )
+                    .ToList();
+
+                var folderIds = folders.Select( f => f.Id ).ToList();
+
+                var existingElements = elementService.Queryable()
+                    .Where( e => folderIds.Contains( e.MediaFolderId ) )
+                    .ToList();
+
+                var syncedKeys = new List<string>();
+
+                foreach ( var video in videos )
+                {
+                    var status = video["status"]?.Value<int>() ?? 0;
+
+                    // 4 = a resolution has finished encoding; the video is playable.
+                    if ( status < 4 )
+                    {
+                        continue;
+                    }
+
+                    var collectionId = video["collectionId"]?.ToString();
+                    var folder = folders.FirstOrDefault( f => f.SourceKey == collectionId );
+
+                    // Videos not filed into a collection have no folder to live in.
+                    if ( folder == null )
+                    {
+                        continue;
+                    }
+
+                    var videoGuid = video["guid"]?.ToString();
+
+                    syncedKeys.Add( videoGuid );
+
+                    var element = existingElements.FirstOrDefault( e => e.SourceKey == videoGuid );
+
+                    if ( element == null )
+                    {
+                        element = new MediaElement
+                        {
+                            SourceKey = videoGuid
+                        };
+
+                        elementService.Add( element );
+                    }
+
+                    element.MediaFolderId = folder.Id;
+                    element.Name = video["title"]?.ToString();
+                    element.Description = video["description"]?.ToString();
+                    element.DurationSeconds = video["length"]?.Value<int>();
+                    element.SourceCreatedDateTime = video["dateUploaded"]?.Value<DateTime?>();
+                    element.SourceData = video.ToString();
+
+                    element.FileData = BuildFileData( video, cdnHostname, videoGuid );
+                    element.ThumbnailData = BuildThumbnailData( video, cdnHostname, videoGuid );
+                }
+
+                // Remove elements whose video no longer exists in Bunny.
+                var orphanedElements = existingElements
+                    .Where( e => !syncedKeys.Contains( e.SourceKey ) )
+                    .ToList();
+
+                foreach ( var element in orphanedElements )
+                {
+                    elementService.Delete( element );
+                }
+
+                rockContext.SaveChanges();
+            }
+        }
+
+        #endregion
+
+        #region Html Summaries
+
+        public override string GetAccountHtmlSummary( MediaAccount mediaAccount )
+        {
+            Dictionary<int, int> durations;
+
+            using ( var rockContext = new RockContext() )
+            {
+                durations = new MediaElementService( rockContext ).Queryable()
+                    .AsNoTracking()
+                    .Where( e => e.MediaFolder.MediaAccountId == mediaAccount.Id )
+                    .Select( e => new { e.Id, e.DurationSeconds } )
+                    .ToList()
+                    .ToDictionary( e => e.Id, e => e.DurationSeconds ?? 0 );
+            }
+
+            return BuildSummaryKpis( GetWatchSummary( durations ), "account" );
+        }
+
+        public override string GetFolderHtmlSummary( MediaFolder mediaFolder )
+        {
+            Dictionary<int, int> durations;
+
+            using ( var rockContext = new RockContext() )
+            {
+                durations = new MediaElementService( rockContext ).Queryable()
+                    .AsNoTracking()
+                    .Where( e => e.MediaFolderId == mediaFolder.Id )
+                    .Select( e => new { e.Id, e.DurationSeconds } )
+                    .ToList()
+                    .ToDictionary( e => e.Id, e => e.DurationSeconds ?? 0 );
+            }
+
+            return BuildSummaryKpis( GetWatchSummary( durations ), "folder" );
+        }
+
+        public override string GetMediaElementHtmlSummary( MediaElement mediaElement )
+        {
+            var durations = new Dictionary<int, int>
+            {
+                { mediaElement.Id, mediaElement.DurationSeconds ?? 0 }
+            };
+
+            return BuildSummaryKpis( GetWatchSummary( durations ), "video" );
+        }
+
+        /// <summary>
+        /// Play count and total watch time, calculated from the watch maps
+        /// Rock's media player records. Bunny's own view counter only tracks
+        /// playback through its embed player, so Rock's interactions are the
+        /// accurate source for us.
+        /// </summary>
+        private static WatchSummary GetWatchSummary( Dictionary<int, int> elementDurations )
+        {
+            var summary = new WatchSummary();
+
+            if ( !elementDurations.Any() )
+            {
+                return summary;
+            }
+
+            var channelId = InteractionChannelCache.GetId(
+                new Guid( Rock.SystemGuid.InteractionChannel.MEDIA_EVENTS ) );
+
+            if ( !channelId.HasValue )
+            {
+                return summary;
+            }
+
+            var elementIds = elementDurations.Keys.ToList();
+
+            using ( var rockContext = new RockContext() )
+            {
+                var interactions = new InteractionService( rockContext ).Queryable()
+                    .AsNoTracking()
+                    .Where( i => i.Operation == "Watch"
+                        && i.InteractionComponent.InteractionChannelId == channelId.Value
+                        && i.InteractionComponent.EntityId.HasValue
+                        && elementIds.Contains( i.InteractionComponent.EntityId.Value ) )
+                    .Select( i => new
+                    {
+                        ElementId = i.InteractionComponent.EntityId.Value,
+                        i.InteractionData
+                    } )
+                    .ToList();
+
+                summary.Plays = interactions.Count;
+
+                var seconds = 0d;
+
+                foreach ( var interaction in interactions )
+                {
+                    var watchedPercentage = GetWatchedPercentage( interaction.InteractionData );
+
+                    if ( watchedPercentage <= 0 )
+                    {
+                        continue;
+                    }
+
+                    var duration = elementDurations[interaction.ElementId];
+
+                    seconds += watchedPercentage / 100d * duration;
+                }
+
+                summary.SecondsWatched = ( long ) seconds;
+            }
+
+            return summary;
+        }
+
+        /// <summary>
+        /// Pulls WatchedPercentage out of an interaction's stored watch map.
+        /// </summary>
+        private static double GetWatchedPercentage( string interactionData )
+        {
+            if ( string.IsNullOrWhiteSpace( interactionData ) )
+            {
+                return 0;
+            }
+
+            try
+            {
+                return JObject.Parse( interactionData )["WatchedPercentage"]?.Value<double>() ?? 0;
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        /// <summary>
+        /// Builds the Plays and Watch Time cards.
+        /// </summary>
+        private static string BuildSummaryKpis( WatchSummary summary, string scope )
+        {
+            var plays = BuildKpi(
+                "fa-play-circle",
+                "text-green-500 border-green-300",
+                summary.Plays.ToString( "N0" ),
+                "Plays",
+                $"The number of plays recorded for this {scope}." );
+
+            var watchTime = BuildKpi(
+                "fa-clock",
+                "text-blue-400 border-blue-200",
+                FormatWatchTime( summary.SecondsWatched ),
+                "Watch Time",
+                $"The total time people have spent watching this {scope}." );
+
+            return $"<div class=\"kpi-container\">{plays}{watchTime}</div>";
+        }
+
+        /// <summary>
+        /// Builds a single card using Rock's standard KPI markup.
+        /// </summary>
+        private static string BuildKpi( string icon, string colorClasses, string value, string label, string tooltip )
+        {
+            return $@"<div class=""kpi kpi-card has-icon-bg {colorClasses}"" data-toggle=""tooltip"" title=""{tooltip}"">
+    <div class=""kpi-icon"">
+        <img class=""svg-placeholder"" src=""data:image/svg+xml;utf8,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'&gt;&lt;/svg&gt;"">
+        <div class=""kpi-content""><i class=""fa fa-fw {icon}""></i></div>
+    </div>
+    <div class=""kpi-stat"">
+        <span class=""kpi-value text-color"">{value}</span>
+        <span class=""kpi-label"">{label}</span>
+    </div>
+</div>";
+        }
+
+        /// <summary>
+        /// Renders total seconds watched at a sensible scale.
+        /// </summary>
+        private static string FormatWatchTime( long totalSeconds )
+        {
+            if ( totalSeconds < 3600 )
+            {
+                return $"{totalSeconds / 60:N0}m";
+            }
+
+            var hours = totalSeconds / 3600d;
+
+            if ( hours < 1000 )
+            {
+                return $"{hours:N0}h";
+            }
+
+            return $"{hours / 1000d:N1}k hrs";
+        }
+
+        /// <summary>
+        /// Aggregated watch figures for a set of media elements.
+        /// </summary>
+        private class WatchSummary
+        {
+            public int Plays { get; set; }
+            public long SecondsWatched { get; set; }
+        }
+
+        #endregion
+
+        #region Bunny Helpers
+
+        /// <summary>
+        /// Pages through the library and returns every video.
+        /// </summary>
+        private static async Task<List<JToken>> GetAllVideosAsync( BunnyApiClient api, CancellationToken cancellationToken )
+        {
+            var videos = new List<JToken>();
+            var page = 1;
+
+            while ( true )
+            {
+                var response = await api.GetAsync( $"videos?page={page}&itemsPerPage=100", cancellationToken );
+                var items = response["items"] as JArray ?? new JArray();
+
+                videos.AddRange( items );
+
+                var totalItems = response["totalItems"]?.Value<int>() ?? 0;
+
+                if ( videos.Count >= totalItems || items.Count == 0 )
+                {
+                    break;
+                }
+
+                page++;
+            }
+
+            return videos;
+        }
+
+        /// <summary>
+        /// Builds the playback file list. The HLS playlist carries every
+        /// bitrate, so it is the only entry required for adaptive playback.
+        /// </summary>
+        private static List<MediaElementFileData> BuildFileData( JToken video, string cdnHostname, string videoGuid )
+        {
+            return new List<MediaElementFileData>
+            {
+                new MediaElementFileData
+                {
+                    PublicName = "Adaptive Stream",
+                    Link = $"https://{cdnHostname}/{videoGuid}/playlist.m3u8",
+                    Quality = MediaElementQuality.HLS,
+                    Format = "application/vnd.apple.mpegurl",
+                    Width = video["width"]?.Value<int>() ?? 0,
+                    Height = video["height"]?.Value<int>() ?? 0,
+                    FPS = ( int ) ( video["framerate"]?.Value<double>() ?? 0 ),
+                    Size = 0,
+                    AllowDownload = false
+                }
+            };
+        }
+
+        /// <summary>
+        /// Builds the thumbnail list: the still image first, followed by
+        /// Bunny's animated WebP preview for hover effects.
+        /// </summary>
+        private static List<MediaElementThumbnailData> BuildThumbnailData( JToken video, string cdnHostname, string videoGuid )
+        {
+            var thumbnails = new List<MediaElementThumbnailData>();
+
+            var width = video["width"]?.Value<int>() ?? 0;
+            var height = video["height"]?.Value<int>() ?? 0;
+
+            var thumbnailFileName = video["thumbnailFileName"]?.ToString();
+
+            if ( !string.IsNullOrWhiteSpace( thumbnailFileName ) )
+            {
+                thumbnails.Add( new MediaElementThumbnailData
+                {
+                    Link = $"https://{cdnHostname}/{videoGuid}/{thumbnailFileName}",
+                    Width = width,
+                    Height = height,
+                    Size = 0
+                } );
+            }
+
+            // Animated preview. Bunny generates this for every processed video.
+            thumbnails.Add( new MediaElementThumbnailData
+            {
+                Link = $"https://{cdnHostname}/{videoGuid}/preview.webp",
+                Width = width,
+                Height = height,
+                Size = 0
+            } );
+
+            return thumbnails;
+        }
+
+        #endregion
+    }
+}
