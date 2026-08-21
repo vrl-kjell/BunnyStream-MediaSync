@@ -3,7 +3,7 @@ RockRMS plugin for syncing media from BunnyStream (Bunny.net) to RockRMS's Media
 
 *_This is under development._* Run at your own risk. I recommend thoroughly testing on a non-production instance of Rock.
 
-Sign up for BunnyStream: [Bunny.net](https://bunny.net?ref=nzxn0bwl71)
+Sign up for BunnyStream: [Bunny.net](https://bunny.net?ref=nzxn0bwl71) - I was able to claim 2 week trial and $50 in trial credit.
 
 ## Why Does This Exist?
 You might think, my videos are on YouTube, or Vimeo, or Resi, or ... why this? I heard rumors that with Vimeo's acquisition they are doing account audits and will likely be forcing many accounts to upgrade. Churches are big bandwidth users and who knows what that will mean for cost. Their CDN is good, but you're bound to their TOS and we're all probably doing some things that push those TOS to the limits.
