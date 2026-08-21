@@ -3,6 +3,8 @@ RockRMS plugin for syncing media from BunnyStream (Bunny.net) to RockRMS's Media
 
 *_This is under development._* Run at your own risk. I recommend thoroughly testing on a non-production instance of Rock.
 
+Supports version 18.4 or later.
+
 Sign up for BunnyStream: [Bunny.net](https://bunny.net?ref=nzxn0bwl71) - I was able to claim 2 week trial and $50 in trial credit.
 
 ## Why Does This Exist?
