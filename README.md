@@ -18,6 +18,8 @@ I'll be honest, before today, I had never heard of them. But they popped to the 
 ## What does this plugin do?
 I tried to emulate the way Triumph created the Vimeo Media Sync plugin to a certain degree. What I couldn't pull from BunnyStream I pulled from Rock interactions. In essence, you create a collection in BunnyStream and those videos can be brought in as media elements in Rock. You can then use the Media Shortcode or media lava to show the videos wherever you need them. You can also use it to populate content channels. Just like all other media accounts. 
 
+Watch a little preview video: [Media Entity - BunnyStream](https://valleyreallife-my.sharepoint.com/:v:/g/personal/kjell_nygren_vrl_church/IQD2hR04F5l9SbLnFkJ0UO2dASsXbDsmsHd5r8tRXzc_FSo?e=uSzrFo)
+
 ## Installation
 * Set up your [Bunny.net](https://bunny.net?ref=nzxn0bwl71)
 * Download the .dll from this repo and drop it into you wwwroot/Bin folder. Note: touching DLLs will cause an AppPool recycle.
