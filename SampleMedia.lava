@@ -1,0 +1,246 @@
+{% comment %}
+================================================================================
+  MEDIA FOLDER GALLERY  —  Bunny Stream
+  dev.uplands.BunnyStream
+
+  Drop into an HTML Content block.
+
+  REQUIRED BLOCK SETTINGS
+    • Enabled Lava Commands ....... RockEntity
+    • Cache Duration .............. 0   (querystring-driven; caching breaks it)
+
+  HOW IT WORKS
+    Thumbnail click adds ?MediaId=[id] to the URL. The player renders above the
+    grid and the page smooth-scrolls to it. Clicking another tile swaps it.
+================================================================================
+{% endcomment %}
+
+{%- comment -%} ---------------- CONFIG ---------------- {%- endcomment -%}
+{%- assign folderId    = 25 -%} //- IMPORTANT UPDATE TO YOUR MEDIA FOLDER!
+{%- assign maxColumns  = 3 -%}
+{%- assign thumbWidth  = 480 -%}
+{%- assign itemLimit   = 100 -%}
+{%- assign sortBy      = 'Name' -%}
+{%- assign autoplay    = 'true' -%}
+
+{%- assign mediaIdParam = 'Global' | PageParameter:'MediaId' -%}
+{%- assign selectedId   = mediaIdParam | AsInteger -%}
+
+
+<div class="mfg" style="--mfg-cols: {{ maxColumns }};">
+
+{%- comment -%} ---------------- PLAYER ---------------- {%- endcomment -%}
+{% if mediaIdParam != null and mediaIdParam != '' %}
+  {% mediaelement id:'{{ selectedId }}' securityenabled:'false' %}
+    {% if mediaelement != null and mediaelement.MediaFolderId == folderId %}
+    <div class="mfg-player" id="mfg-player">
+      <div class="mfg-player__bar">
+        <h3 class="mfg-player__title">{{ mediaelement.Name }}</h3>
+        <a href="?" class="mfg-player__close">Close player &times;</a>
+      </div>
+      <div class="mfg-player__frame">
+        {[ mediaplayer media:'{{ mediaelement.Guid }}' autoplay:'{{ autoplay }}' ]}{[ endmediaplayer ]}
+      </div>
+    </div>
+    {% endif %}
+  {% endmediaelement %}
+{% endif %}
+
+
+{%- comment -%} ---------------- GRID ---------------- {%- endcomment -%}
+{% mediaelement where:'MediaFolderId == {{ folderId }}' sort:'{{ sortBy }}' limit:'{{ itemLimit }}' securityenabled:'false' iterator:'mediaItems' %}
+
+  {% assign itemCount = mediaItems | Size %}
+  {% if itemCount == 0 %}
+    <p class="text-muted">No media found in folder {{ folderId }}.</p>
+  {% else %}
+
+  <div class="mfg-grid">
+    {% for item in mediaItems %}
+
+      {%- comment -%}
+        Pull the still and the animated preview out of ThumbnailData.
+        Falls back to ThumbnailDataJson, then to deriving preview.webp
+        from the still's path.
+      {%- endcomment -%}
+      {%- assign thumbList  = item.ThumbnailData -%}
+      {%- assign thumbCount = thumbList | Size -%}
+      {%- if thumbCount == 0 -%}
+        {%- assign thumbList = item.ThumbnailDataJson | FromJSON -%}
+      {%- endif -%}
+
+      {%- assign stillUrl   = '' -%}
+      {%- assign previewUrl = '' -%}
+      {%- for t in thumbList -%}
+        {%- assign link = t.Link -%}
+        {%- if link contains 'preview' -%}
+          {%- assign previewUrl = link -%}
+        {%- elsif stillUrl == '' -%}
+          {%- assign stillUrl = link -%}
+        {%- endif -%}
+      {%- endfor -%}
+
+      {%- if stillUrl == '' -%}{%- assign stillUrl = item.DefaultThumbnailUrl -%}{%- endif -%}
+      {%- assign stillBase = stillUrl | Split:'?' | First -%}
+      {%- if previewUrl == '' and stillBase != '' -%}
+        {%- assign previewUrl = stillBase | Replace:'thumbnail.jpg','preview.webp' -%}
+      {%- endif -%}
+      {%- if previewUrl == stillBase -%}{%- assign previewUrl = '' -%}{%- endif -%}
+
+      {%- comment -%}
+        Size the still. Rock-hosted images go through GetImage.ashx.
+        Bunny CDN images are remote — GetImage.ashx can't touch those, so the
+        width hint is passed to the pull zone instead.
+      {%- endcomment -%}
+      {%- capture stillSrc -%}
+        {%- if stillBase contains '://' -%}
+          {{ stillBase }}?width={{ thumbWidth }}
+        {%- else -%}
+          /GetImage.ashx?fileName={{ stillBase | EscapeDataString }}&maxwidth={{ thumbWidth }}&format=webp&quality=80
+        {%- endif -%}
+      {%- endcapture -%}
+
+      <a class="mfg-item{% if item.Id == selectedId %} is-active{% endif %}"
+         href="?MediaId={{ item.Id }}#mfg-player">
+        <div class="mfg-thumb">
+          {% if stillBase != '' %}
+            <img class="mfg-thumb__still"
+                 src="{{ stillSrc | Trim }}"
+                 alt="{{ item.Name | Escape }}"
+                 loading="lazy">
+          {% endif %}
+          {% if previewUrl != '' %}
+            <img class="mfg-thumb__preview"
+                 data-src="{{ previewUrl }}"
+                 alt=""
+                 aria-hidden="true">
+          {% endif %}
+        </div>
+        <div class="mfg-title">{{ item.Name }}</div>
+      </a>
+
+    {% endfor %}
+  </div>
+
+  {% endif %}
+{% endmediaelement %}
+
+</div>
+
+
+<style>
+.mfg { margin-bottom: 24px; }
+
+/* ---------- player ---------- */
+.mfg-player { margin: 0 0 32px; scroll-margin-top: 20px; }
+.mfg-player__bar {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 16px; margin-bottom: 10px;
+}
+.mfg-player__title { margin: 0; font-size: 20px; line-height: 1.3; }
+.mfg-player__close { font-size: 13px; white-space: nowrap; flex: 0 0 auto; }
+.mfg-player__frame {
+  border-radius: 10px; overflow: hidden; background: #000;
+  box-shadow: 0 6px 24px rgba(0,0,0,.18);
+}
+
+/* ---------- grid ---------- */
+.mfg-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--mfg-cols, 4), minmax(0, 1fr));
+  gap: 24px 20px;
+}
+@media (max-width: 1199px) {
+  .mfg-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+/* ---------- mobile: horizontal swipe ---------- */
+@media (max-width: 767px) {
+  .mfg-grid {
+    grid-template-columns: none;
+    grid-auto-flow: column;
+    grid-auto-columns: 74%;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 10px;
+  }
+  .mfg-item { scroll-snap-align: start; }
+}
+
+/* ---------- tile ---------- */
+.mfg-item { display: block; text-decoration: none; color: inherit; }
+.mfg-item:hover, .mfg-item:focus { text-decoration: none; color: inherit; }
+
+.mfg-thumb {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #e9ecef;
+  box-shadow: 0 2px 5px rgba(0,0,0,.10), 0 8px 20px rgba(0,0,0,.08);
+  transition: box-shadow .25s ease, transform .25s ease;
+}
+.mfg-thumb img {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  display: block; object-fit: cover;
+  filter: saturate(.35);
+  transition: opacity .35s ease, filter .35s ease;
+}
+.mfg-thumb__preview { opacity: 0; }
+
+.mfg-item:hover .mfg-thumb,
+.mfg-item:focus .mfg-thumb { box-shadow: 0 4px 10px rgba(0,0,0,.14), 0 14px 30px rgba(0,0,0,.12); }
+.mfg-item:hover .mfg-thumb img,
+.mfg-item:focus .mfg-thumb img { filter: saturate(1); }
+.mfg-item:hover .mfg-thumb__preview,
+.mfg-item:focus .mfg-thumb__preview { opacity: 1; }
+.mfg-item:hover .mfg-thumb__still,
+.mfg-item:focus .mfg-thumb__still { opacity: 0; }
+
+.mfg-item.is-active .mfg-thumb { outline: 3px solid #4a90d9; outline-offset: 2px; }
+.mfg-item.is-active .mfg-thumb img { filter: saturate(1); }
+
+.mfg-title {
+  margin-top: 10px;
+  font-size: 14px;
+  line-height: 1.35;
+  font-weight: 600;
+}
+
+/* No hover on touch — show full colour and skip the swap entirely */
+@media (hover: none) {
+  .mfg-thumb img { filter: saturate(.6); }
+  .mfg-thumb__preview { display: none; }
+}
+</style>
+
+<script>
+(function () {
+  // Load the animated preview only on first hover so we don't pull a webp
+  // for every tile on page load.
+  var tiles = document.querySelectorAll('.mfg-item');
+  for (var i = 0; i < tiles.length; i++) {
+    (function (tile) {
+      var preview = tile.querySelector('.mfg-thumb__preview');
+      if (!preview) { return; }
+      var load = function () {
+        if (!preview.getAttribute('src') && preview.getAttribute('data-src')) {
+          preview.setAttribute('src', preview.getAttribute('data-src'));
+        }
+        tile.removeEventListener('mouseenter', load);
+      };
+      tile.addEventListener('mouseenter', load);
+    })(tiles[i]);
+  }
+
+  // Force the scroll to the player once it's on the page.
+  var player = document.getElementById('mfg-player');
+  if (player) {
+    window.setTimeout(function () {
+      var y = player.getBoundingClientRect().top + window.pageYOffset - 20;
+      window.scrollTo({ top: y, behavior: 'smooth' });
+    }, 200);
+  }
+})();
+</script>
